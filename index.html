@@ -7,6 +7,7 @@
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     canvas { display:block; width:100vw; height:100vh; }
+
     .overlay {
       position: fixed; inset: 0;
       display:flex; flex-direction:column;
@@ -38,6 +39,7 @@
       color: #d8c67a;
       text-shadow: 0 2px 14px rgba(0,0,0,0.6);
       pointer-events:none;
+      white-space: nowrap;
     }
     .hint {
       position: fixed;
@@ -58,123 +60,236 @@
     <h1 class="title">3.14 means we will meet again</h1>
     <div class="formula">z(θ) = e<sup>iθ</sup> + e<sup>iπθ</sup></div>
   </div>
+
   <div class="theta" id="thetaText">θ = 0.00</div>
   <div class="hint">Tap/click to pause • Press R to reset</div>
 
-<script>
-(() => {
-  const canvas = document.getElementById("c");
-  const ctx = canvas.getContext("2d", { alpha: false });
-  const thetaText = document.getElementById("thetaText");
+  <script>
+  (() => {
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const thetaText = document.getElementById("thetaText");
 
-  // --- Settings you can tweak ---
-  const alpha = Math.PI;       // 3.14... (π)
-  const speed = 0.018;         // radians per frame-ish
-  const fade = 0.06;           // 0..1 (lower = longer trails)
-  const pointsPerFrame = 140;  // draw multiple points per frame for smoothness
-  const lineWidth = 1.0;
+    // ===== Main idea =====
+    // z(θ) = e^{iθ} + e^{iαθ}, with α = π
+    const alpha = Math.PI;
 
-  // Colors (kept simple / elegant)
-  const bg = "#000000";
-  const trail = "rgba(220,220,220,0.35)";
-  const glow = "rgba(255,255,255,0.06)";
+    // ===== Slow motion controls =====
+    // Time-based motion so speed is consistent across devices.
+    const thetaSpeedRadPerSec = 0.28;   // LOWER = slower (try 0.15 .. 0.6)
+    const samplesPerFrame = 10;         // curve samples drawn per frame
+    const fade = 0.02;                  // LOWER = longer trail (try 0.01 .. 0.08)
 
-  let w, h, dpr;
-  function resize() {
-    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-    w = Math.floor(window.innerWidth * dpr);
-    h = Math.floor(window.innerHeight * dpr);
-    canvas.width = w;
-    canvas.height = h;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    reset(true);
-  }
-  window.addEventListener("resize", resize);
+    // ===== Meet-again stop (approximate, since π never repeats exactly) =====
+    const minSecondsBeforeCheck = 8;    // don't allow stopping too early
+    const meetTolerancePx = 5;          // smaller = stricter "meeting"
+    const minTravelSamples = 1400;      // ensure it drew enough first
 
-  // Complex exp: e^{i t} = (cos t, sin t)
-  function expi(t) {
-    return { x: Math.cos(t), y: Math.sin(t) };
-  }
+    // ===== Pendulum overlay =====
+    const showPendulum = true;
+    const pendulumScale = 0.28;         // size relative to screen
+    const bobRadius = 7;                // bob size
 
-  // z(theta) = e^{iθ} + e^{iαθ}
-  function z(theta) {
-    const a = expi(theta);
-    const b = expi(alpha * theta);
-    return { x: a.x + b.x, y: a.y + b.y };
-  }
+    // ===== Colors =====
+    const bg = "#000000";
+    const trail = "rgba(220,220,220,0.35)";
+    const glow = "rgba(255,255,255,0.06)";
+    const arm = "rgba(255,255,255,0.55)";
+    const armFaint = "rgba(255,255,255,0.18)";
 
-  // Map complex plane to screen
-  function toScreen(p, scale, cx, cy) {
-    return { x: cx + p.x * scale, y: cy - p.y * scale };
-  }
+    let w, h, dpr;
+    let theta = 0;
+    let paused = false;
+    let stopped = false;
 
-  let theta = 0;
-  let paused = false;
-  let lastPoint = null;
+    let lastCurvePoint = null;
+    let startCurvePoint = null;
+    let totalSamples = 0;
 
-  function clear(bgOnly=false) {
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, w, h);
-    if (!bgOnly) lastPoint = null;
-  }
+    let startTimeMs = null;
+    let lastFrameMs = null;
 
-  function reset(bgOnly=false) {
-    theta = 0;
-    clear(bgOnly);
-    lastPoint = null;
-    thetaText.textContent = `θ = ${theta.toFixed(2)}`;
-  }
+    function resize() {
+      dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      w = Math.floor(window.innerWidth * dpr);
+      h = Math.floor(window.innerHeight * dpr);
+      canvas.width = w;
+      canvas.height = h;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      reset(true);
+    }
+    window.addEventListener("resize", resize);
 
-  // Interaction
-  window.addEventListener("pointerdown", () => paused = !paused);
-  window.addEventListener("keydown", (e) => {
-    if (e.key.toLowerCase() === "r") reset();
-    if (e.key === " ") paused = !paused;
-  });
-
-  function draw() {
-    requestAnimationFrame(draw);
-    if (paused) return;
-
-    // Fading trail effect
-    ctx.fillStyle = `rgba(0,0,0,${fade})`;
-    ctx.fillRect(0, 0, w, h);
-
-    const cx = w / 2, cy = h / 2;
-    const scale = Math.min(w, h) * 0.28;
-
-    ctx.lineWidth = lineWidth * dpr;
-
-    // Draw many tiny segments per frame for smooth curve
-    for (let i = 0; i < pointsPerFrame; i++) {
-      const p = z(theta);
-      const s = toScreen(p, scale, cx, cy);
-
-      // subtle glow dot
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, 2.2 * dpr, 0, Math.PI * 2);
-      ctx.fill();
-
-      if (lastPoint) {
-        ctx.strokeStyle = trail;
-        ctx.beginPath();
-        ctx.moveTo(lastPoint.x, lastPoint.y);
-        ctx.lineTo(s.x, s.y);
-        ctx.stroke();
-      }
-
-      lastPoint = s;
-      theta += speed;
+    function expi(t) {
+      return { x: Math.cos(t), y: Math.sin(t) };
     }
 
-    thetaText.textContent = `θ = ${theta.toFixed(2)}`;
-  }
+    // Returns a = e^{iθ}, b = e^{iαθ}, z = a + b
+    function components(theta) {
+      const a = expi(theta);
+      const b = expi(alpha * theta);
+      return { a, b, z: { x: a.x + b.x, y: a.y + b.y } };
+    }
 
-  resize();
-  draw();
-})();
-</script>
+    function toScreen(p, scale, cx, cy) {
+      return { x: cx + p.x * scale, y: cy - p.y * scale };
+    }
+
+    function dist(a, b) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.hypot(dx, dy);
+    }
+
+    function clear(bgOnly=false) {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+      if (!bgOnly) lastCurvePoint = null;
+    }
+
+    function reset(bgOnly=false) {
+      theta = 0;
+      paused = false;
+      stopped = false;
+      totalSamples = 0;
+      startCurvePoint = null;
+      lastCurvePoint = null;
+      startTimeMs = null;
+      lastFrameMs = null;
+
+      clear(bgOnly);
+      thetaText.textContent = `θ = ${theta.toFixed(2)}`;
+    }
+
+    // Tap/click pause (if stopped, ignore)
+    window.addEventListener("pointerdown", () => {
+      if (!stopped) paused = !paused;
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "r") reset();
+      if (e.key === " " && !stopped) paused = !paused;
+    });
+
+    function drawPendulum(cx, cy, scale, a, zPoint) {
+      const p0 = { x: cx, y: cy };
+      const p1 = toScreen(a, scale, cx, cy);
+      const p2 = toScreen(zPoint, scale, cx, cy);
+
+      // faint reference circle
+      ctx.strokeStyle = armFaint;
+      ctx.lineWidth = 1.0 * dpr;
+      ctx.beginPath();
+      ctx.arc(cx, cy, scale, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // arm 1
+      ctx.strokeStyle = arm;
+      ctx.lineWidth = 2.2 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+
+      // arm 2
+      ctx.strokeStyle = arm;
+      ctx.lineWidth = 2.2 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+
+      // joints / bobs
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath();
+      ctx.arc(p0.x, p0.y, 4.5 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.8)";
+      ctx.beginPath();
+      ctx.arc(p1.x, p1.y, bobRadius * dpr, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.beginPath();
+      ctx.arc(p2.x, p2.y, (bobRadius + 1) * dpr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function loop(nowMs) {
+      requestAnimationFrame(loop);
+      if (paused || stopped) return;
+
+      if (startTimeMs === null) startTimeMs = nowMs;
+      if (lastFrameMs === null) lastFrameMs = nowMs;
+
+      const elapsedSec = (nowMs - startTimeMs) / 1000;
+      const dtSec = Math.min(0.05, (nowMs - lastFrameMs) / 1000);
+      lastFrameMs = nowMs;
+
+      // fade trail
+      ctx.fillStyle = `rgba(0,0,0,${fade})`;
+      ctx.fillRect(0, 0, w, h);
+
+      const cx = w / 2, cy = h / 2;
+      const scale = Math.min(w, h) * pendulumScale;
+
+      // slow motion theta advance
+      const dTheta = thetaSpeedRadPerSec * dtSec;
+
+      ctx.lineWidth = 1.0 * dpr;
+
+      // draw curve samples for this frame
+      for (let i = 0; i < samplesPerFrame; i++) {
+        const t = theta + (i / samplesPerFrame) * dTheta;
+        const { z } = components(t);
+        const s = toScreen(z, scale, cx, cy);
+
+        if (!startCurvePoint) startCurvePoint = { x: s.x, y: s.y };
+
+        // glow dot
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 2.0 * dpr, 0, Math.PI * 2);
+        ctx.fill();
+
+        // trail segment
+        if (lastCurvePoint) {
+          ctx.strokeStyle = trail;
+          ctx.beginPath();
+          ctx.moveTo(lastCurvePoint.x, lastCurvePoint.y);
+          ctx.lineTo(s.x, s.y);
+          ctx.stroke();
+        }
+
+        lastCurvePoint = s;
+        totalSamples++;
+
+        // meet-again stop
+        if (
+          elapsedSec > minSecondsBeforeCheck &&
+          totalSamples > minTravelSamples &&
+          dist(s, startCurvePoint) <= meetTolerancePx
+        ) {
+          stopped = true;
+          thetaText.textContent = `θ = ${t.toFixed(2)}  •  we met again ✨`;
+          break;
+        }
+      }
+
+      theta += dTheta;
+      if (!stopped) thetaText.textContent = `θ = ${theta.toFixed(2)}`;
+
+      // pendulum overlay
+      if (showPendulum) {
+        const { a, z } = components(theta);
+        drawPendulum(cx, cy, scale, a, z);
+      }
+    }
+
+    resize();
+    requestAnimationFrame(loop);
+  })();
+  </script>
 </body>
 </html>
