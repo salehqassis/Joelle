@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3.14 means we will meet again</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; }
+    .overlay {
+      position: fixed; inset: 0;
+      display:flex; flex-direction:column;
+      justify-content:flex-start; align-items:center;
+      pointer-events:none;
+      padding: 7vh 4vw 0 4vw;
+      color: #fff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      text-align:center;
+    }
+    .title {
+      font-size: clamp(20px, 4vw, 44px);
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-shadow: 0 2px 14px rgba(0,0,0,0.6);
+      margin: 0;
+    }
+    .formula {
+      margin-top: 10px;
+      font-size: clamp(12px, 2.2vw, 18px);
+      opacity: 0.8;
+    }
+    .theta {
+      position: fixed;
+      left: 50%;
+      bottom: 7vh;
+      transform: translateX(-50%);
+      font-size: clamp(14px, 2.2vw, 20px);
+      color: #d8c67a;
+      text-shadow: 0 2px 14px rgba(0,0,0,0.6);
+      pointer-events:none;
+    }
+    .hint {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      font-size: 12px;
+      opacity: 0.55;
+      color: #fff;
+      pointer-events:none;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <div class="overlay">
+    <h1 class="title">3.14 means we will meet again</h1>
+    <div class="formula">z(θ) = e<sup>iθ</sup> + e<sup>iπθ</sup></div>
+  </div>
+  <div class="theta" id="thetaText">θ = 0.00</div>
+  <div class="hint">Tap/click to pause • Press R to reset</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+  const thetaText = document.getElementById("thetaText");
+
+  // --- Settings you can tweak ---
+  const alpha = Math.PI;       // 3.14... (π)
+  const speed = 0.018;         // radians per frame-ish
+  const fade = 0.06;           // 0..1 (lower = longer trails)
+  const pointsPerFrame = 140;  // draw multiple points per frame for smoothness
+  const lineWidth = 1.0;
+
+  // Colors (kept simple / elegant)
+  const bg = "#000000";
+  const trail = "rgba(220,220,220,0.35)";
+  const glow = "rgba(255,255,255,0.06)";
+
+  let w, h, dpr;
+  function resize() {
+    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    w = Math.floor(window.innerWidth * dpr);
+    h = Math.floor(window.innerHeight * dpr);
+    canvas.width = w;
+    canvas.height = h;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    reset(true);
+  }
+  window.addEventListener("resize", resize);
+
+  // Complex exp: e^{i t} = (cos t, sin t)
+  function expi(t) {
+    return { x: Math.cos(t), y: Math.sin(t) };
+  }
+
+  // z(theta) = e^{iθ} + e^{iαθ}
+  function z(theta) {
+    const a = expi(theta);
+    const b = expi(alpha * theta);
+    return { x: a.x + b.x, y: a.y + b.y };
+  }
+
+  // Map complex plane to screen
+  function toScreen(p, scale, cx, cy) {
+    return { x: cx + p.x * scale, y: cy - p.y * scale };
+  }
+
+  let theta = 0;
+  let paused = false;
+  let lastPoint = null;
+
+  function clear(bgOnly=false) {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    if (!bgOnly) lastPoint = null;
+  }
+
+  function reset(bgOnly=false) {
+    theta = 0;
+    clear(bgOnly);
+    lastPoint = null;
+    thetaText.textContent = `θ = ${theta.toFixed(2)}`;
+  }
+
+  // Interaction
+  window.addEventListener("pointerdown", () => paused = !paused);
+  window.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "r") reset();
+    if (e.key === " ") paused = !paused;
+  });
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (paused) return;
+
+    // Fading trail effect
+    ctx.fillStyle = `rgba(0,0,0,${fade})`;
+    ctx.fillRect(0, 0, w, h);
+
+    const cx = w / 2, cy = h / 2;
+    const scale = Math.min(w, h) * 0.28;
+
+    ctx.lineWidth = lineWidth * dpr;
+
+    // Draw many tiny segments per frame for smooth curve
+    for (let i = 0; i < pointsPerFrame; i++) {
+      const p = z(theta);
+      const s = toScreen(p, scale, cx, cy);
+
+      // subtle glow dot
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 2.2 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (lastPoint) {
+        ctx.strokeStyle = trail;
+        ctx.beginPath();
+        ctx.moveTo(lastPoint.x, lastPoint.y);
+        ctx.lineTo(s.x, s.y);
+        ctx.stroke();
+      }
+
+      lastPoint = s;
+      theta += speed;
+    }
+
+    thetaText.textContent = `θ = ${theta.toFixed(2)}`;
+  }
+
+  resize();
+  draw();
+})();
+</script>
+</body>
+</html>
